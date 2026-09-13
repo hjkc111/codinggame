@@ -1,18 +1,18 @@
 export type Action = {type: 'move' | 'gather' | 'attack' | 'idle'; x?: number; y?: number; target_id?: string};
 export type Actions = Record<string, Action>;
-export type Robot = {id: string; owner: string; role: string; x: number; y: number; hp: number; maxHp: number; cargo: number; capacity: number; alive: boolean; speed: number; range: number; damage: number; cooldown: number; respawn: number; harvest: number; action: Action};
+export type Robot = {id: string; owner: string; role: string; x: number; y: number; hp: number; maxHp: number; cargo: number; cargoSlots: number; capacity: number; alive: boolean; speed: number; range: number; damage: number; cooldown: number; respawn: number; harvest: number; action: Action};
 export type Resource = {id: string; x: number; y: number; amount: number; value: number; refill: number; core?: boolean};
-export type Player = {id: string; name: string; color: string; score: number; base: {x: number; y: number}};
+export type Player = {id: string; name: string; color: string; score: number; collected: number; deaths: number; base: {x: number; y: number}};
 export type GameEvent = {id: number; time: number; kind: string; text: string; x: number; y: number; color: string; tx?: number; ty?: number};
 export type World = {time: number; tick: number; duration: number; status: 'running' | 'finished'; players: Player[]; robots: Robot[]; resources: Resource[]; events: GameEvent[]; nextEvent: number};
 export const W = 960, H = 640;
 export const COLORS = ['#54e5bb', '#ff7e83', '#f2c66f', '#aa9cff'];
 export const dist = (a: {x:number;y:number}, b: {x:number;y:number}) => Math.hypot(a.x-b.x,a.y-b.y);
-export function createWorld(names = ['你的小队', '巡游者'], duration = 180): World {
+export function createWorld(names = ['你的小队', '巡游者'], duration = 180, rotation = 0): World {
   const bases = names.length === 2 ? [{x:95,y:320},{x:865,y:320}] : [{x:95,y:105},{x:865,y:535},{x:865,y:105},{x:95,y:535}];
-  const players = names.map((name,i)=>({id:`p${i}`,name,color:COLORS[i],score:0,base:bases[i]}));
+  const players = names.map((name,i)=>({id:`p${i}`,name,color:COLORS[i],score:0,collected:0,deaths:0,base:bases[(i+rotation)%names.length]}));
   const roles = [{role:'Scout',hp:70,speed:115,capacity:5,damage:7,range:86},{role:'Guard',hp:150,speed:66,capacity:8,damage:17,range:110},{role:'Hauler',hp:100,speed:82,capacity:16,damage:5,range:70}];
-  const robots = players.flatMap(p=>roles.map((r,i)=>({id:`${p.id}-${i}`,owner:p.id,role:r.role,x:p.base.x+(i-1)*22,y:p.base.y+24,hp:r.hp,maxHp:r.hp,cargo:0,capacity:r.capacity,alive:true,speed:r.speed,range:r.range,damage:r.damage,cooldown:0,respawn:0,harvest:0,action:{type:'idle'} as Action})));
+  const robots = players.flatMap(p=>roles.map((r,i)=>({id:`${p.id}-${i}`,owner:p.id,role:r.role,x:p.base.x+(i-1)*22,y:p.base.y+24,hp:r.hp,maxHp:r.hp,cargo:0,cargoSlots:0,capacity:r.capacity,alive:true,speed:r.speed,range:r.range,damage:r.damage,cooldown:0,respawn:0,harvest:0,action:{type:'idle'} as Action})));
   const resources: Resource[] = [[240,180],[240,320],[240,460],[720,180],[720,320],[720,460],[380,135],[580,135],[380,505],[580,505],[405,270],[555,370]].map(([x,y],i)=>({id:`r${i}`,x,y,amount:24,value:1,refill:0}));
   resources.push({id:'core',x:480,y:320,amount:1,value:20,core:true,refill:0});
   return {time:0,tick:0,duration,status:'running',players,robots,resources,events:[],nextEvent:0};
@@ -38,7 +38,7 @@ export function acceptActions(w:World,owner:string,input:unknown):number {
 }
 function move(r:Robot,target:{x:number;y:number},dt:number,stop=0) {
   const d=dist(r,target); if(d<=stop)return;
-  const length=Math.min(d-stop,r.speed*(1-.18*r.cargo/r.capacity)*dt);
+  const length=Math.min(d-stop,r.speed*(1-.18*r.cargoSlots/r.capacity)*dt);
   r.x+=(target.x-r.x)/d*length;r.y+=(target.y-r.y)/d*length;
 }
 export function step(w:World,dt:number) {
@@ -61,8 +61,8 @@ export function step(w:World,dt:number) {
       const t=w.resources.find(t=>t.id===a.target_id && t.amount>0);
       if(!t){r.action={type:'idle'};continue;}
       move(r,t,dt,17);
-      if(dist(r,t)<22&&r.cargo<r.capacity&&r.harvest===0){
-        r.cargo+=t.value;t.amount--;r.harvest=.4;
+      if(dist(r,t)<22&&r.cargoSlots<r.capacity&&r.harvest===0){
+        r.cargo+=t.value;r.cargoSlots++;p.collected+=t.value;t.amount--;r.harvest=.4;
         event(w,'gather',`${r.role} 采集 ${t.core?'核心':'能源'}`,t.x,t.y,p.color);
         if(t.amount===0)t.refill=t.core?35:14;
       }
@@ -74,11 +74,11 @@ export function step(w:World,dt:number) {
     }
     if(dist(r,p.base)<43){
       r.hp=Math.min(r.maxHp,r.hp+dt*15);
-      if(r.cargo){p.score+=r.cargo;event(w,'score',`${p.name} +${r.cargo}`,r.x,r.y,p.color);r.cargo=0;}
+      if(r.cargo){p.score+=r.cargo;event(w,'score',`${p.name} +${r.cargo}`,r.x,r.y,p.color);r.cargo=0;r.cargoSlots=0;}
     }
   }
   for(const h of hits)h.r.hp-=h.damage;
-  for(const r of w.robots){if(r.alive&&r.hp<=0){r.alive=false;r.hp=0;r.respawn=6;event(w,'death',`${r.role} 被击毁 · 6 秒后重生`,r.x,r.y,w.players.find(p=>p.id===r.owner)!.color);if(r.cargo){const nearest=[...w.resources].filter(t=>!t.core).sort((a,b)=>dist(a,r)-dist(b,r))[0];nearest.amount+=r.cargo;}r.cargo=0;}}
+  for(const r of w.robots){if(r.alive&&r.hp<=0){w.players.find(p=>p.id===r.owner)!.deaths++;r.alive=false;r.hp=0;r.respawn=6;event(w,'death',`${r.role} 被击毁 · 6 秒后重生`,r.x,r.y,w.players.find(p=>p.id===r.owner)!.color);if(r.cargo){const nearest=[...w.resources].filter(t=>!t.core).sort((a,b)=>dist(a,r)-dist(b,r))[0];nearest.amount+=r.cargo;}r.cargo=0;r.cargoSlots=0;}}
   if(w.time>=w.duration-1e-6){w.time=w.duration;w.status='finished';event(w,'end','比赛结束',480,320,'#f2c66f');}
 }
 export function advance(w:World,seconds:number){for(let remain=Math.min(seconds,4);remain>1e-7;remain-=.05)step(w,Math.min(.05,remain));}

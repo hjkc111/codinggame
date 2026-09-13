@@ -11,7 +11,9 @@ Python 优先的网页编程游戏，支持真实 Python / JavaScript、单人�
 ## 当前实现
 
 - 三角色：Scout、Guard、Hauler；移动、采集、攻击、卸货、死亡、重生。
-- 180 秒比赛，能源交付计分；核心价值 20，每次采完 35 秒后刷新。
+- 双人最多三局、先赢两局；3–4 人三轮积分赛。全员准备开战，首轮不限时，局间五分钟仅提醒。
+- 每轮轮换出生位置、保留代码，展示采集/交付/死亡及累计积分；整场结束可原房间再赛。
+- 单轮 180 秒，能源交付计分；核心价值 20，每次采完 35 秒后刷新。
 - 原生 Python 语法在 Pyodide 0.27.7 的独立 Worker 中运行；JS 也使用 Worker。
 - 运行、热部署、暂停、重置、2 倍训练、代码导出、按语言保存本机草稿。
 - D1 存储房间，随机席位凭证摘要、乐观锁、动作序号、云端状态校验。
@@ -48,7 +50,7 @@ npm run build
 
 ```sh
 node scripts/browser-check.cjs
-# 完整三分钟 UI 联机验收
+# 完整三轮 UI 联机验收，约 10 分钟
 node scripts/full-match.cjs
 ```
 
@@ -72,10 +74,12 @@ def decide(observation, memory):
 |---|---|---|
 | create | name | code、token、playerId、房间快照 |
 | join | code、name | 新席位和快照 |
-| start | code、token | 仅房主可启动，至少两人 |
-| sync | code、token、seq、actions | 推进世界并返回最新快照 |
+| ready | code、token、match、round、ready | 全员准备后 3 秒开战；false 取消 |
+| timer | code、token、match、round、seconds | 房主提醒：0 不限时、600 十分钟、120 延长两分钟 |
+| rematch | code、token、match、round | 房主在整场结束后重开 |
+| sync | code、token、match、round、seq、actions | 推进世界并返回最新快照 |
 
-token 只交给该席位，不存日志或 Git；其他玩家只看到昵称和 ID。客户端 seq 必须递增，旧包不会覆盖新动作。每个房间数据库更新使用 version 比较，冲突最多重试六次。云端不接受客户端给出的分数、血量或世界快照。
+token 只交给该席位，不存日志或 Git；其他玩家只看到昵称和 ID。客户端 seq 必须递增，match / round 隔离旧轮指令。响应 revision 单调比较，防止旧快照回滚界面。lib/series.ts 定义状态机，tests/series.test.ts 注入时间验证边界。每个房间数据库更新使用 version 比较，冲突最多重试六次。云端不接受客户端给出的分数、血量或世界快照。
 
 ## 发布与仓库关联
 
@@ -87,4 +91,4 @@ GitHub `origin`: https://github.com/hjkc111/codinggame.git 。Sites 的发布源
 
 ## 后续开发顺序
 
-先评估在线同步延迟和房间负载，再建设服务端 Python 隔离执行与专用房间调度；之后增加持久回放、团队和 8 人模式、迷雾与多地图。各阶段验收详见 `docx/02-开发计划与实现手册.docx`。
+先评估在线同步延迟和房间负载，再建设服务端 Python 隔离执行与专用房间调度；之后增加持久回放、团队和 8 人模式、迷雾与多地图。多轮规则与本次优化验收详见 `docx/04-多轮赛制与优化计划.docx`，当前状态见 03；01、02 保留为首版历史设计。

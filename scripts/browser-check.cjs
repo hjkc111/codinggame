@@ -23,10 +23,11 @@ const fs=require('fs');fs.mkdirSync('.qa',{recursive:true});
  const call=(p,body)=>p.evaluate(async b=>{const r=await fetch('/api/rooms',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});return {status:r.status,data:await r.json()};},body);
  const created=await call(clients[0],{op:'create',name:'Alpha'});if(created.status!==200)throw Error(JSON.stringify(created));
  const seats=[created.data];for(let i=1;i<3;i++){const joined=await call(clients[i],{op:'join',name:['','Bravo','Charlie'][i],code:created.data.code});if(joined.status!==200)throw Error(JSON.stringify(joined));seats.push(joined.data);}
- const forbidden=await call(clients[1],{op:'start',code:seats[0].code,token:seats[1].token});if(forbidden.status!==403)throw Error('Host auth failed');
- const started=await call(clients[0],{op:'start',code:seats[0].code,token:seats[0].token});if(started.data.world.players.length!==3)throw Error('3-player start failed');
- for(let n=0;n<5;n++){await Promise.all(clients.map((p,i)=>call(p,{op:'sync',code:seats[i].code,token:seats[i].token,seq:n,actions:{[`${seats[i].playerId}-0`]:{type:'move',x:480,y:320}}})));await page.waitForTimeout(420);}
- const snapshots=await Promise.all(clients.map((p,i)=>call(p,{op:'sync',code:seats[i].code,token:seats[i].token,seq:10,actions:{}})));
+ const forbidden=await call(clients[1],{op:'timer',code:seats[0].code,token:seats[1].token,match:1,round:1,seconds:600});if(forbidden.status!==409)throw Error('Host auth failed');
+ for(let i=0;i<3;i++){const ready=await call(clients[i],{op:'ready',code:seats[i].code,token:seats[i].token,match:1,round:1,ready:true});if(ready.status!==200)throw Error(JSON.stringify(ready));}
+ await page.waitForTimeout(3200);
+ for(let n=0;n<5;n++){await Promise.all(clients.map((p,i)=>call(p,{op:'sync',match:1,round:1,code:seats[i].code,token:seats[i].token,seq:n,actions:{[`${seats[i].playerId}-0`]:{type:'move',x:480,y:320}}})));await page.waitForTimeout(420);}
+ const snapshots=await Promise.all(clients.map((p,i)=>call(p,{op:'sync',match:1,round:1,code:seats[i].code,token:seats[i].token,seq:10,actions:{}})));
  if(snapshots.some(s=>s.status!==200||s.data.world.players.length!==3))throw Error('Room sync failed');
  const late=await call(page,{op:'join',code:seats[0].code,name:'Late'});if(late.status!==409)throw Error('Late join allowed');
  fs.writeFileSync('.qa/browser-results.json',JSON.stringify({python:true,modify:true,pause:true,timeout:true,mobileOverflow:overflow,threePlayers:true,hostAuthorization:true,lateJoinRejected:true,errors,snapshotTimes:snapshots.map(s=>s.data.world.time)},null,2));
