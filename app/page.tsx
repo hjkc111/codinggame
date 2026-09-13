@@ -83,7 +83,7 @@ export default function Home(){
     if(!session)return;let closed=false;let timer:ReturnType<typeof setTimeout>;
     const sync=async()=>{
       try{const view=roomRef.current;const data=await api({op:'sync',...session,match:view?.match,round:view?.round,seq:++sequence.current,actions:actions.current});if(closed)return;applyRoom(data);setNetError('');
-        if(!runner.current&&data.players.find(p=>p.id===session.playerId)?.ready&&['waiting','intermission','countdown'].includes(data.status))await roomAction('ready',{ready:false});
+        if((!runner.current||runner.current.closed)&&data.players.find(p=>p.id===session.playerId)?.ready&&['waiting','intermission','countdown'].includes(data.status))await roomAction('ready',{ready:false});
       }catch(e){if(!closed)setNetError(String(e));}
       if(!closed)timer=setTimeout(sync,400);
     };sync();return()=>{closed=true;clearTimeout(timer);};
@@ -117,7 +117,7 @@ export default function Home(){
   async function prepare(){
     if(busy||loading)return;setBusy(true);
     try{if(roomRef.current?.players.find(p=>p.id===sessionRef.current?.playerId)?.ready){await roomAction('ready',{ready:false});return;}
-      if(!runner.current||activeCode!==code||activeLanguage!==language){if(!await deploy())return;}
+      if(!runner.current||runner.current.closed||activeCode!==code||activeLanguage!==language){if(!await deploy())return;}
       await roomAction('ready',{ready:true});
     }finally{setBusy(false);}
   }
