@@ -14,6 +14,8 @@ const fs=require('fs');fs.mkdirSync('.qa',{recursive:true});
  for(let round=1;round<=3;round++){
    for(const p of pages){await p.getByRole('button',{name:'验证并准备',exact:true}).click();await p.getByRole('button',{name:'取消准备',exact:true}).waitFor({timeout:60000});}
    await pages[0].getByRole('button',{name:'取消准备',exact:true}).waitFor({state:'hidden',timeout:10000});
+   await pages[0].locator('.room-strip').filter({hasText:/\d+ ms/}).waitFor({timeout:5000});
+   await Promise.all(pages.map(p=>p.evaluate(()=>{window.__perf.rtt=[];window.__perf.gaps=[];window.__perf.last=0;})));
    console.log(`Round ${round} started with real interpreters`);
    await pages[0].waitForTimeout(15000);
    const scoreTexts=await pages[0].locator('.score-item strong').allTextContents();
