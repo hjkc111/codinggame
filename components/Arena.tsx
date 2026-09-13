@@ -1,9 +1,10 @@
 'use client';
 import {useEffect,useRef} from 'react';
 import {W,H,type World,dist} from '@/lib/game';
-export default function Arena({world,selected,onSelect,guides,running}:{world:World;selected:string|null;onSelect:(id:string)=>void;guides:boolean;running:boolean}){
-  const canvas=useRef<HTMLCanvasElement>(null),latest=useRef(world),settings=useRef({selected,guides,running}),positions=useRef(new Map<string,{x:number;y:number}>());
-  latest.current=world;settings.current={selected,guides,running};
+import {displayPosition} from '@/lib/presentation';
+export default function Arena({world,selected,onSelect,guides,running,online=false}:{online?:boolean;world:World;selected:string|null;onSelect:(id:string)=>void;guides:boolean;running:boolean}){
+  const canvas=useRef<HTMLCanvasElement>(null),latest=useRef(world),settings=useRef({selected,guides,running,online}),receivedAt=useRef(0),positions=useRef(new Map<string,{x:number;y:number}>());
+  if(latest.current!==world){latest.current=world;receivedAt.current=performance.now();}settings.current={selected,guides,running,online};
   useEffect(()=>{
     const el=canvas.current!,ctx=el.getContext('2d')!;let frame=0,previous=0;
     const reduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -13,6 +14,8 @@ export default function Arena({world,selected,onSelect,guides,running}:{world:Wo
       if(el.width!==Math.round(rect.width*dpr)||el.height!==Math.round(rect.height*dpr)){el.width=Math.round(rect.width*dpr);el.height=Math.round(rect.height*dpr);}
       ctx.setTransform(el.width/W,0,0,el.height/H,0,0);
       const w=latest.current,s=settings.current,delta=Math.min((now-previous)/1000,.1);previous=now;
+      const age=s.running?Math.max(0,Math.min((now-receivedAt.current)/1000,.35)):0;
+      const visualTime=w.time+age;
       const t=reduced?0:now/1000;
       ctx.fillStyle='#09191f';ctx.fillRect(0,0,W,H);
       const glow=ctx.createRadialGradient(480,320,20,480,320,500);glow.addColorStop(0,'#15323a');glow.addColorStop(1,'#09191f');ctx.fillStyle=glow;ctx.fillRect(0,0,W,H);
@@ -37,7 +40,8 @@ export default function Arena({world,selected,onSelect,guides,running}:{world:Wo
       }
       for(const r of w.robots){
         let p=positions.current.get(r.id);if(!p||dist(p,r)>150||w.time<.1){p={x:r.x,y:r.y};positions.current.set(r.id,p);}
-        const mix=reduced||!s.running?1:1-Math.exp(-delta*14);p.x+=(r.x-p.x)*mix;p.y+=(r.y-p.y)*mix;
+        const predicted=s.online&&s.running?displayPosition(w,r,age):r;
+        const mix=reduced||!s.running?1:1-Math.exp(-delta*20);p.x+=(predicted.x-p.x)*mix;p.y+=(predicted.y-p.y)*mix;
         if(!r.alive)continue;
         const player=w.players.find(a=>a.id===r.owner)!;
         const target=r.action.type==='move'?{x:r.action.x!,y:r.action.y!}:r.action.type==='gather'?w.resources.find(a=>a.id===r.action.target_id):w.robots.find(a=>a.id===r.action.target_id);
@@ -50,12 +54,12 @@ export default function Arena({world,selected,onSelect,guides,running}:{world:Wo
         ctx.fillStyle='#02090c';ctx.fillRect(p.x-15,p.y-24,30,4);ctx.fillStyle=r.hp/r.maxHp<.3?'#ff7e83':player.color;ctx.fillRect(p.x-15,p.y-24,30*r.hp/r.maxHp,4);
         if(r.cargo){ctx.font='11px monospace';ctx.textAlign='center';ctx.fillStyle='#ffe0a0';ctx.fillText(`${r.cargo}`,p.x,p.y+29);}
       }
-      for(const e of w.events){const age=w.time-e.time;if(age>1.3||age<0)continue;ctx.save();ctx.globalAlpha=Math.max(0,1-age/1.3);ctx.strokeStyle=e.color;ctx.fillStyle=e.color;
+      for(const e of w.events){const age=visualTime-e.time;if(age>1.3||age<0)continue;ctx.save();ctx.globalAlpha=Math.max(0,1-age/1.3);ctx.strokeStyle=e.color;ctx.fillStyle=e.color;
         if(e.kind==='shot'&&age<.18){ctx.lineWidth=2;ctx.shadowBlur=8;ctx.shadowColor=e.color;ctx.beginPath();ctx.moveTo(e.x,e.y);ctx.lineTo(e.tx!,e.ty!);ctx.stroke();}
         if(e.kind==='gather'||e.kind==='spawn'||e.kind==='death'){ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(e.x,e.y,8+age*(e.kind==='death'?50:25),0,Math.PI*2);ctx.stroke();}
         if(e.kind==='score'){ctx.font='bold 16px monospace';ctx.textAlign='center';ctx.fillText(e.text.split(' ').at(-1)!,e.x,e.y-20-age*25);}ctx.restore();
       }
     };frame=requestAnimationFrame(draw);return()=>cancelAnimationFrame(frame);
   },[]);
-  return <canvas ref={canvas} className="arena-canvas" aria-label="实时机器人战场，点击机器人查看详情；下方队伍列表可用键盘选择" onClick={e=>{const rect=e.currentTarget.getBoundingClientRect(),p={x:(e.clientX-rect.left)/rect.width*W,y:(e.clientY-rect.top)/rect.height*H};const nearest=world.robots.filter(r=>r.alive).sort((a,b)=>dist(a,p)-dist(b,p))[0];if(nearest&&dist(nearest,p)<35)onSelect(nearest.id);}}/>;
+  return <canvas ref={canvas} className="arena-canvas" aria-label="实时机器人战场，点击机器人查看详情；下方队伍列表可用键盘选择" onClick={e=>{const rect=e.currentTarget.getBoundingClientRect(),p={x:(e.clientX-rect.left)/rect.width*W,y:(e.clientY-rect.top)/rect.height*H};const nearest=world.robots.filter(r=>r.alive).sort((a,b)=>dist(positions.current.get(a.id)||a,p)-dist(positions.current.get(b.id)||b,p))[0];if(nearest&&dist(positions.current.get(nearest.id)||nearest,p)<35)onSelect(nearest.id);}}/>;
 }
