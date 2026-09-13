@@ -1,5 +1,7 @@
 # Codefront 代码战场
 
+在线体验：https://codefront-arena.hjkc20050804.chatgpt.site
+
 Python 优先的网页编程游戏，支持真实 Python / JavaScript、单人训练和 2–4 人云端休闲房间。教学按需查阅，没有强制通关。
 
 ## 文档
@@ -46,6 +48,8 @@ npm run build
 
 ```sh
 node scripts/browser-check.cjs
+# 完整三分钟 UI 联机验收
+node scripts/full-match.cjs
 ```
 
 ## 编程入口
