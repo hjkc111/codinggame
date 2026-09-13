@@ -1,165 +1,124 @@
 'use client';
 import {useEffect,useRef,useState} from 'react';
-import {Play,Pause,RotateCcw,BookOpen,Users,Code2,Terminal,ArrowUpRight,Radio,Target,ChevronRight,X,Copy,Check,Flag,Zap,ScanLine,Braces,Upload,Download} from 'lucide-react';
-import Arena from '@/components/Arena';
+import {Braces,BookOpen,Play,Users,Download,Upload} from 'lucide-react';
+import ReplayViewer from '@/components/ReplayViewer';
 import SeriesPanel from '@/components/SeriesPanel';
-import {syncDelay} from '@/lib/presentation';
-import type {RoomView} from '@/lib/room-view';
-import {createWorld,advance,acceptActions,observe,botActions,type World,type Actions} from '@/lib/game';
 import {PYTHON,JAVASCRIPT} from '@/lib/templates';
+import {createWorld,observe} from '@/lib/game';
+import {Computation,validateDecision} from '@/lib/compute';
 import {Runner} from '@/lib/runner';
-
+import type {Replay} from '@/lib/replay';
+import type {RoomView} from '@/lib/room-view';
+import type {Program} from '@/lib/series';
 type Session={code:string;token:string;playerId:string};
-
-const clock=(s:number)=>`${Math.floor(s/60).toString().padStart(2,'0')}:${Math.floor(s%60).toString().padStart(2,'0')}`;
-const idle=(w:World,id:string)=>Object.fromEntries(w.robots.filter(r=>r.owner===id).map(r=>[r.id,{type:'idle'}]));
-function highlight(code:string){return code.split(/(#[^\n]*|\/\/[^\n]*|"[^"\n]*"|'[^'\n]*'|\b(?:def|return|for|in|if|elif|else|continue|and|or|not|function|const|let|of|true|false)\b|\b\d+(?:\.\d+)?\b)/g).map((text,i)=><span key={i} className={text.startsWith('#')||text.startsWith('//')?'tok-comment':/^['"]/.test(text)?'tok-string':/^\d/.test(text)?'tok-number':/^(def|return|for|in|if|elif|else|continue|and|or|not|function|const|let|of|true|false)$/.test(text)?'tok-key':''}>{text}</span>);}
+async function api<T=RoomView & Session>(body:object){
+  const response=await fetch('/api/rooms',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(15000)});
+  const data=await response.json() as T & {error?:string};if(!response.ok)throw Error(data.error||'连接失败');return data;
+}
 const chapters=[
-  {title:'开始一场训练',text:'无需完成任何课程。保持左侧 Python 示例，点击「运行策略」。解释器就绪后，三台机器人会按照你的代码寻找资源、采集并运回基地。每一分都来自实际交付。',steps:['点击机器人或下方队伍卡片，查看血量、载量和目标。','点击暂停可冻结训练；1× 可以切换到 2×。','修改代码后点击「部署修改」，成功后新的版本才生效。','点击重置开始新局，保留编辑草稿。训练和联机使用相同的战斗规则。'],code:'def decide(observation, memory):\n    actions = {}\n    # 为每台机器人选择动作\n    return actions, memory'},
-  {title:'战况与动作 API',text:'每约 250 毫秒接收一次 observation。所有位置都是世界坐标，左上角 (0, 0)，右下角 (960, 640)。Python 返回 actions, memory；JavaScript 返回 [actions, memory]。',steps:['robots：自己的机器人。字段为 id、role、alive、x、y、hp、maxHp、cargo、cargoSlots、capacity（能量 / 已占格 / 总格数）。','base：自己的基地坐标。resources：尚未采完的资源，包含 id、x、y、amount、value。enemies：活着的敌人。','move：前往坐标；gather：接近目标并采集；attack：接近敌人并攻击；idle：取消任务。未指定则延续旧任务。','进入基地 43 单位内自动卸货并恢复血量。无目标或目标消失时等待下一次决策。第一版无障碍物和战争迷雾。'],code:'actions[robot["id"]] = {\n    "type": "move", "x": 480, "y": 320\n}\n# 也可以使用：\n# {"type": "gather", "target_id": resource["id"]}\n# {"type": "attack", "target_id": enemy["id"]}\n# {"type": "idle"}'},
-  {title:'让策略变得聪明',text:'从满载返航开始，逐步尝试不同角色分工。Scout 快、Guard 耐打、Hauler 载量大。先确保能得分，再优化路线和对抗。',steps:['将返航阈值从 capacity 改为 capacity * 0.6，对比运输次数与总得分。','Guard 遇到近处敌人时攻击，其余机器人继续采集。','resources 或 enemies 可能为空，调用 min 前先检查。','memory 用于保存跨次数据。只保存可以转为 JSON 的字典、列表、字符串、数字和布尔值，最大约 64 KB。'],code:'memory["decisions"] = memory.get("decisions", 0) + 1\n\n# 把这一判断放在采集分支前，可让 Guard 参战：\n# elif robot["role"] == "Guard" and observation["enemies"]:\n#     enemy = min(observation["enemies"], key=lambda e:\n#         (e["x"]-robot["x"])**2 + (e["y"]-robot["y"])**2)\n#     actions[robot["id"]] = {"type":"attack", "target_id":enemy["id"]}'},
-  {title:'邀请朋友联机',text:'点击「多人房间」，填写昵称后创建房间。朋友打开同一网址，输入六位房间码加入。第一版支持 2–4 人自由混战，每人独立控制三台机器人。',steps:['私有站点的朋友需要先获得站点访问权限；房间码不能绕过网站权限。','至少两人进入后，每人点击「验证并准备」。全员准备进入三秒倒计时，编辑草稿会取消准备。首轮不限时，局间五分钟只是提醒。','每轮三分钟，交付最高者赢。双人最多三局、先赢两局；平局不计胜场。三至四人三轮积分赛，并列平分名次积分，总积分相同再比较累计交付。','局间保留代码，清空 memory，轮换出生位置，查看采集、交付、死亡再改策略。刷新恢复席位后需重新运行。离线时保留最后动作，但 Python 不会在后台继续决策。第一版是客户端执行的休闲对战，不提供排位。'],code:'共享的是同一场云端比赛\n程序 → 动作 → 云端校验和结算 → 所有人看到结果'},
-  {title:'错误与运行限制',text:'这是真实 Python 解释器，不是模拟解析器。首次加载需要下载运行时，之后浏览器会缓存。所有运行发生在独立 Worker 中，超时会终止解释器。',steps:['IndentationError：检查缩进，统一使用空格。KeyError：对照 API 字段名称。','需要返回 actions, memory，不能只返回 actions。memory 和动作不能包含函数或循环引用。','单次执行超过约 1.2 秒会被终止；请避免 while True、巨大循环和无限递归。','错误显示后修改代码并重新运行。草稿自动保存在本机；不是云端代码备份，可用下载按钮导出。不要运行来源不明的代码。'],code:'# 不需要自己写无限循环，系统会重复调用 decide。\n# 调试可以 print，但输出会截断。\nprint(observation["tick"])'},
+  ['从训练开始','无需完成教程。页面上方是系统只读接口，下方是你的程序。首次打开使用分机器人示例，点击“运行训练”，浏览器会真正执行 Python 并计算 180 秒对局，然后弹出战场。首次下载解释器需要一些时间。修改代码后重新运行，对比交付得分。'],
+  ['单独控制机器人','scout、guard、hauler 分别控制三台机器人，每个函数都返回一个动作。robot 是当前机器人的状态，world 是本次观察，memory 是这台机器人的独立字典。使用 robot.move_to(x, y) 前往目标，robot.follow([(x,y),...], memory) 沿路线循环。将 loop=False 可走到末点停止。为不同路线传入不同 key，避免共用进度。'],
+  ['字段与目标选择','地图左上角 (0,0)，右下角 (960,640)，无障碍、无战争迷雾。world.resources 是可采资源，world.enemies 是存活敌人；可能为空。nearest_resource / nearest_enemy 找不到时返回 None（JS 为 undefined）。每次决策重新查看状态，不要长期保存失效目标。基地半径 43 内自动卸货、每秒恢复 15 HP。普通能源 1 EP/格，中央核心 20 EP/格；cargoSlots 是格数，cargo 是能量值。'],
+  ['联机与提交','创建房间，将网址与六位房间码发给朋友，支持 2–4 人。各自写好代码并“验证并提交”，准备不限时；全部提交后锁定本轮代码。为了统一计算，源码会交给房主浏览器执行，房间成员可见，勿放密钥。房主计算期间保持页面开启。完成后每人下载同一战报，可以自由暂停、拖动和调速，观看期间修改的是下一轮草稿。'],
+  ['赛程与结果','两人三局两胜，先胜两局结束，最多三局；单轮平局不计胜场。三到四人固定三轮积分赛，同名次平分对应名次积分，总积分相同再比累计交付。每轮轮换出生点，保留代码、清空 memory。完成计算就结算成绩；各自看完后再次提交进入下一轮，观看速度不影响排名。上一轮战报可从房间按钮重新打开。'],
+  ['错误与兼容','每 0.2 秒模拟时间调用策略一次，物理步长 0.05 秒。单次执行约 1.2 秒超时就终止 Worker；计算中出错，该队之后空闲，其他队继续，错误写进战报。memory 只存 JSON 数据，最多 64 KB；代码最多 20,000 字符。旧 decide(observation, memory) 仍有效，Python 返回 actions, memory，JS 返回 [actions, memory]，并优先于三角色入口。错误中的 strategy.py 行号对应编辑器真实逻辑行。草稿仅保存在本机，可下载备份。'],
+  ['播放与连接恢复','战场用浏览器动画帧绘制，逻辑与屏幕帧率分开。暂停、0.25–4× 和进度拖动只控制本地回放，不重跑代码。关闭窗口暂停，重新打开接着播放。计算完成后刷新可恢复席位、重新下载战报。计算中房主关闭页面导致 60 秒无进度，会退回准备阶段；重新提交即可。房间创建后有效一小时。当前是浏览器协调的休闲对战，不是严格防作弊排位。'],
 ];
-
 export default function Home(){
-  const [world,setWorld]=useState(()=>createWorld()),worldRef=useRef(world);
-  const [running,setRunning]=useState(true),runningRef=useRef(true),[demo,setDemo]=useState(true),demoRef=useRef(true);
-  const [language,setLanguage]=useState('python'),[code,setCode]=useState(PYTHON),[activeCode,setActiveCode]=useState(''),[activeLanguage,setActiveLanguage]=useState(''),[version,setVersion]=useState(0);
-  const [loading,setLoading]=useState(false),[runtime,setRuntime]=useState('示例脚本演示'),[error,setError]=useState(''),[logs,setLogs]=useState<string[]>([]),[speed,setSpeed]=useState(1);
-  const [selected,setSelected]=useState<string|null>('p0-0'),[guides,setGuides]=useState(true),[manual,setManual]=useState(false),[chapter,setChapter]=useState(0);
-  const [roomModal,setRoomModal]=useState(false),[name,setName]=useState('指挥官'),[joinCode,setJoinCode]=useState(''),[session,setSession]=useState<Session|null>(null),[room,setRoom]=useState<RoomView|null>(null),[busy,setBusy]=useState(false),[netError,setNetError]=useState(''),[copied,setCopied]=useState(false),[latency,setLatency]=useState<number|null>(null);
-  const runner=useRef<Runner|null>(null),candidate=useRef<Runner|null>(null),memory=useRef<any>({}),actions=useRef<Actions>({}),sequence=useRef(Date.now()),sessionRef=useRef<Session|null>(null),generation=useRef(0),roomRef=useRef<RoomView|null>(null),epoch=useRef(''),unreadyPending=useRef(false);
-  const editorPre=useRef<HTMLPreElement>(null),gutter=useRef<HTMLDivElement>(null),hydrated=useRef(false),drafts=useRef<Record<string,string>>({python:PYTHON,javascript:JAVASCRIPT});
-  const playerId=session?.playerId||'p0';const own=world.robots.filter(r=>r.owner===playerId);const focused=world.robots.find(r=>r.id===selected);
-  const publishWorld=(w:World)=>{worldRef.current=w;setWorld(structuredClone(w));};
-  function stopRunner(){generation.current++;candidate.current?.close();candidate.current=null;runner.current?.close();runner.current=null;memory.current={};actions.current={};setLoading(false);setVersion(0);setActiveCode('');setActiveLanguage('');}
+  const [language,setLanguage]=useState<Program['language']>('python'),[code,setCode]=useState(PYTHON),[font,setFont]=useState(16),[caret,setCaret]=useState('1:1');
+  const drafts=useRef({python:PYTHON,javascript:JAVASCRIPT}),hydrated=useRef(false),editor=useRef<HTMLTextAreaElement>(null);
+  const [sdk,setSdk]=useState(''),[manual,setManual]=useState(false),[roomModal,setRoomModal]=useState(false),[chapter,setChapter]=useState(0);
+  const manualDialog=useRef<HTMLDialogElement>(null),roomDialog=useRef<HTMLDialogElement>(null);
+  const [replay,setReplay]=useState<Replay|null>(null),[battle,setBattle]=useState(false),[replayTitle,setReplayTitle]=useState('战场预览');
+  const [session,setSession]=useState<Session|null>(null),sessionRef=useRef<Session|null>(null),[room,setRoom]=useState<RoomView|null>(null),roomRef=useRef<RoomView|null>(null);
+  const [name,setName]=useState('指挥官'),[joinCode,setJoinCode]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState(''),[status,setStatus]=useState('写好策略，运行一场训练。'),[progress,setProgress]=useState<number|null>(null);
+  const work=useRef<Computation|null>(null),validation=useRef<Runner|null>(null),generation=useRef(0),computing=useRef(''),loadedReplay=useRef('');
   useEffect(()=>{
-    try{const d=JSON.parse(localStorage.getItem('codefront-drafts')||'null');if(d&&typeof d.python==='string'&&typeof d.javascript==='string'){drafts.current=d;setCode(d.python);}const saved=JSON.parse(sessionStorage.getItem('codefront-seat')||'null');if(saved?.token&&saved?.code){sessionRef.current=saved;setSession(saved);demoRef.current=false;setDemo(false);setRuntime('等待运行策略');}}
-    catch{}hydrated.current=true;
-    return()=>{candidate.current?.close();runner.current?.close();};
+    try{const saved=JSON.parse(localStorage.getItem('codefront-drafts')||'null');if(typeof saved?.python==='string'&&typeof saved?.javascript==='string'){drafts.current=saved;setCode(saved.python);}const seat=JSON.parse(sessionStorage.getItem('codefront-seat')||'null');if(seat?.token&&seat?.code){sessionRef.current=seat;setSession(seat);}}catch{}
+    hydrated.current=true;return()=>{work.current?.close();validation.current?.close();};
   },[]);
-  useEffect(()=>{if(!hydrated.current)return;drafts.current[language]=code;try{localStorage.setItem('codefront-drafts',JSON.stringify(drafts.current));}catch{}},[code,language]);
-  useEffect(()=>{runningRef.current=running;},[running]);
+  useEffect(()=>{if(hydrated.current){drafts.current[language]=code;try{localStorage.setItem('codefront-drafts',JSON.stringify(drafts.current));}catch{}}},[code,language]);
+  useEffect(()=>{let active=true;fetch(language==='python'?'/sdk.py':'/sdk.js').then(r=>{if(!r.ok)throw Error();return r.text();}).then(t=>{if(active)setSdk(t);}).catch(()=>{if(active)setSdk('接口源码加载失败，请刷新重试。');});return()=>{active=false;};},[language]);
+  useEffect(()=>{if(manual)manualDialog.current?.showModal();else manualDialog.current?.close();},[manual]);
+  useEffect(()=>{if(roomModal)roomDialog.current?.showModal();else roomDialog.current?.close();},[roomModal]);
+  function applyRoom(view:RoomView){if(view.code!==sessionRef.current?.code||(roomRef.current&&view.revision<roomRef.current.revision))return;roomRef.current=view;setRoom(view);}
   useEffect(()=>{
-    if(session)return;
-    let last=performance.now(),counter=0;
-    const timer=setInterval(()=>{
-      const now=performance.now(),dt=Math.min((now-last)/1000,.15);last=now;
-      if(!runningRef.current)return;const w=worldRef.current;
-      if(counter++%4===0){for(const p of w.players)if(p.id!=='p0'||demoRef.current)acceptActions(w,p.id,botActions(w,p.id));}
-      advance(w,dt*speed);setWorld(structuredClone(w));
-      if(w.status==='finished'){runningRef.current=false;setRunning(false);}
-    },50);return()=>clearInterval(timer);
-  },[session,speed]);
-  useEffect(()=>{
-    let closed=false,timer:ReturnType<typeof setTimeout>;
-    const decide=async()=>{
-      const r=runner.current,s=sessionRef.current,w=worldRef.current,decisionEpoch=epoch.current;
-      if(r&&!r.closed&&runningRef.current&&w.status==='running'&&(!s||roomRef.current?.status==='running')){
-        try{const result=await r.request('decide',{observation:observe(w,s?.playerId||'p0'),memory:memory.current});
-          if(closed||r!==runner.current||decisionEpoch!==epoch.current)throw Error('策略状态已变化');
-          if(!result.actions||typeof result.actions!=='object'||Array.isArray(result.actions))throw Error('actions 必须是机器人 ID 到动作的字典');
-          if(JSON.stringify(result.memory).length>65536)throw Error('memory 超过 64 KB');
-          memory.current=result.memory;actions.current=result.actions;
-          if(!s)acceptActions(worldRef.current,'p0',result.actions);
-          if(result.output?.length)setLogs(old=>[...old,...result.output].slice(-20));
-        }catch(e){if(!closed&&r===runner.current&&decisionEpoch===epoch.current){r.close();runner.current=null;setError(String(e));setRuntime('策略已停止');actions.current=idle(w,s?.playerId||'p0') as Actions;if(!s){acceptActions(w,'p0',actions.current);setRunning(false);runningRef.current=false;}}}
-      }
-      if(!closed)timer=setTimeout(decide,250);
-    };timer=setTimeout(decide,250);return()=>{closed=true;clearTimeout(timer);};
-  },[]);
-  async function api(body:object){const response=await fetch('/api/rooms',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(5000)});const data=await response.json() as RoomView & Session & {error?:string};if(!response.ok)throw Error(data.error||'连接失败');return data;}
-  function applyRoom(data:RoomView){
-    if(data.code!==sessionRef.current?.code)return;
-    if(roomRef.current&&data.revision<roomRef.current.revision)return;
-    const key=`${data.match}:${data.round}:${data.status==='running'?'battle':'prep'}`;
-    if(epoch.current!==key){epoch.current=key;memory.current={};actions.current={};}
-    roomRef.current=data;setRoom(data);
-    if(data.world)publishWorld(data.world);
-    else publishWorld(createWorld(data.players.map(p=>p.name),180,data.round-1));
-    const play=data.status==='running';setRunning(play);runningRef.current=play;
-  }
-  useEffect(()=>{
-    if(!session)return;let closed=false;let timer:ReturnType<typeof setTimeout>;
-    const sync=async()=>{
-      const started=performance.now();let failed=false;
-      try{const view=roomRef.current;const data=await api({op:'sync',...session,match:view?.match,round:view?.round,seq:++sequence.current,actions:actions.current});if(closed)return;setLatency(Math.round(performance.now()-started));applyRoom(data);setNetError('');
-        if((!runner.current||runner.current.closed)&&data.players.find(p=>p.id===session.playerId)?.ready&&['waiting','intermission','countdown'].includes(data.status))await roomAction('ready',{ready:false});
-      }catch(e){failed=true;if(!closed)setNetError(String(e));}
-      if(!closed)timer=setTimeout(sync,syncDelay(performance.now()-started,roomRef.current?.status==='running'||roomRef.current?.status==='countdown',failed));
-    };sync();return()=>{closed=true;clearTimeout(timer);};
+    if(!session)return;let cancelled=false,timer:ReturnType<typeof setTimeout>;
+    const sync=async()=>{try{const view=await api({op:'sync',...session});if(!cancelled)applyRoom(view);}catch(e){if(!cancelled)setError(String(e));}if(!cancelled)timer=setTimeout(sync,1000);};
+    sync();return()=>{cancelled=true;clearTimeout(timer);};
   },[session]);
-  useEffect(()=>{const close=(e:KeyboardEvent)=>{if(e.key==='Escape'){setManual(false);setRoomModal(false);}};window.addEventListener('keydown',close);return()=>window.removeEventListener('keydown',close);},[]);
-  async function deploy(){
-    if(loading)return false;const gen=++generation.current;setLoading(true);setError('');setRuntime(language==='python'?'正在加载 Python 解释器…':'正在加载 JavaScript…');const next=new Runner(language);candidate.current=next;
-    try{
-      await next.request('load',{},45000);await next.request('compile',{code});
-      const result=await next.request('decide',{observation:observe(sessionRef.current&&roomRef.current?.status!=='running'?createWorld(roomRef.current?.players.map(p=>p.name),180,(roomRef.current?.round||1)-1):worldRef.current,sessionRef.current?.playerId||'p0'),memory:{}});
-      if(!result.actions||typeof result.actions!=='object'||Array.isArray(result.actions))throw Error('actions 必须是字典');
-      if(JSON.stringify(result.memory).length>65536)throw Error('memory 超过 64 KB');
-      if(gen!==generation.current){next.close();return false;}
-      runner.current?.close();runner.current=next;candidate.current=null;memory.current=result.memory;actions.current=result.actions;
-      if(demoRef.current&&!sessionRef.current){publishWorld(createWorld());}
-      demoRef.current=false;setDemo(false);if(!sessionRef.current)acceptActions(worldRef.current,'p0',result.actions);
-      setVersion(v=>v+1);setActiveCode(code);setActiveLanguage(language);setRuntime(language==='python'?'Python 正在执行':'JavaScript 正在执行');setRunning(true);runningRef.current=true;
-      setLogs(old=>[...old,`部署成功 · ${language} · 收到 ${Object.keys(result.actions).length} 台机器人动作`].slice(-20));return true;
-    }catch(e){next.close();if(gen===generation.current){setError(String(e));setRuntime(runner.current?'部署失败，旧版本继续运行':'解释器未启动');}return false;}
-    finally{if(gen===generation.current)setLoading(false);}
-  }
-  function reset(){stopRunner();demoRef.current=false;setDemo(false);setRunning(false);runningRef.current=false;publishWorld(createWorld());setRuntime('等待运行策略');setError('');setLogs([]);}
-  function training(){stopRunner();sessionRef.current=null;roomRef.current=null;epoch.current='';setSession(null);setRoom(null);sessionStorage.removeItem('codefront-seat');demoRef.current=true;setDemo(true);publishWorld(createWorld());setRunning(true);runningRef.current=true;setRuntime('示例脚本演示');setNetError('');}
-  async function enterRoom(op:string){
-    setBusy(true);setNetError('');try{const data=await api({op,name,code:joinCode.toUpperCase()});stopRunner();const s={code:data.code,token:data.token,playerId:data.playerId};sessionRef.current=s;setSession(s);sessionStorage.setItem('codefront-seat',JSON.stringify(s));roomRef.current=null;epoch.current='';applyRoom(data);demoRef.current=false;setDemo(false);publishWorld(createWorld(data.players.map((p:any)=>p.name)));setRuntime('等待运行策略');setRoomModal(false);setRunning(true);runningRef.current=true;setSelected(`${s.playerId}-0`);}catch(e){setNetError(String(e));}finally{setBusy(false);}
-  }
   async function roomAction(op:string,extra:object={}){
-    const seat=sessionRef.current,view=roomRef.current;if(!seat||!view)return;
-    try{const data=await api({op,...seat,match:view.match,round:view.round,...extra});if(sessionRef.current===seat)applyRoom(data);setNetError('');return true;}catch(e){setNetError(String(e));return false;}
+    const s=sessionRef.current,r=roomRef.current;if(!s||!r)return;
+    try{const view=await api({op,...s,match:r.match,round:r.round,...extra});if(s===sessionRef.current)applyRoom(view);return true;}catch(e){setError(String(e));return false;}
   }
+  async function openReplay(round:number,match=roomRef.current?.match){
+    const seat=sessionRef.current;if(!seat)return;
+    try{const result=await api<Replay>({op:'replay',...seat,match,round});if(seat!==sessionRef.current||roomRef.current?.match!==match)return;setReplay(result);setReplayTitle(`联机 · 第 ${round} 轮战报`);setBattle(true);}catch(e){setError(String(e));}
+  }
+  useEffect(()=>{
+    if(!room||!session)return;
+    const last=room.history.at(-1),key=last?`${session.code}:${room.match}:${last.round}`:'';
+    if(key&&key!==loadedReplay.current){loadedReplay.current=key;void openReplay(last!.round,room.match);}
+    if(room.status!=='computing'||session.playerId!=='p0'||computing.current===room.computeId)return;
+    // A refreshed coordinator cannot restore arbitrary Python globals. Let the lease expire.
+    if(room.frames>0){setStatus('计算连接已重置；等待超时回到准备阶段后重新提交。');return;}
+    computing.current=room.computeId;
+    const executor=crypto.randomUUID(),captured=room,seat=session,task=new Computation(createWorld(room.players.map(p=>p.name),180,room.round-1),Object.fromEntries(room.players.map(p=>[p.id,p.program!])));
+    work.current?.close();work.current=task;setStatus('房主正在统一计算所有已提交程序…');setProgress(0);
+    (async()=>{
+      try{
+        applyRoom(await api({op:'claim',...seat,match:captured.match,round:captured.round,computeId:captured.computeId,executor}));
+        await task.load();
+        for(let start=0;start<900;start+=20){
+          const frames=await task.batch();
+          let acknowledged=false;
+          for(let retry=0;retry<4&&!acknowledged;retry++){
+            if(task.closed)throw Error('计算已取消');
+            try{const view=await api({op:'batch',...seat,match:captured.match,round:captured.round,computeId:captured.computeId,executor,start,frames,errors:task.errors});applyRoom(view);acknowledged=true;}
+            catch(e){const view=await api({op:'sync',...seat}) as RoomView;applyRoom(view);if(view.status==='computing'&&view.executor!==executor)throw e;if(view.history.some(h=>h.computeId===captured.computeId)||(view.computeId===captured.computeId&&view.frames>=start+frames.length))acknowledged=true;else if(view.status!=='computing'||view.computeId!==captured.computeId||retry===3)throw e;}
+          }
+          setProgress(Math.round((start+frames.length)/9));
+        }
+        setStatus('联机战报已生成，每位玩家独立播放。');
+      }catch(e){if(!task.closed)setError(String(e));}
+      finally{task.close();if(work.current===task){work.current=null;setProgress(null);}}
+    })();
+  },[room,session]);
+  async function train(){
+    if(busy||work.current)return;
+    const gen=++generation.current,initial=createWorld(),task=new Computation(structuredClone(initial),{p0:{language,code},p1:null});
+    work.current=task;setBusy(true);setError('');setProgress(0);setStatus('加载解释器并计算训练战报…');
+    try{await task.load();if(task.errors.length)throw Error(task.errors.join('\n'));const frames:Replay['frames']=[];while(task.world.status==='running'){frames.push(...await task.batch());setProgress(Math.round(frames.length/9));await new Promise(resolve=>setTimeout(resolve,0));}if(gen!==generation.current)return;setReplay({initial,frames,errors:task.errors,final:structuredClone(task.world)});setReplayTitle('训练 · 你的程序 vs 巡游者');setBattle(true);setStatus(task.errors.length?'训练完成，运行错误已记录在战报中。':'训练战报已生成。修改策略后可再次运行。');}
+    catch(e){if(gen===generation.current)setError(String(e));}
+    finally{task.close();if(work.current===task)work.current=null;if(gen===generation.current){setBusy(false);setProgress(null);}}
+  }
+  function cancel(){generation.current++;work.current?.close();work.current=null;validation.current?.close();validation.current=null;setBusy(false);setProgress(null);setStatus('计算已取消，草稿已保留。');}
   async function prepare(){
-    if(busy||loading)return;setBusy(true);
-    try{if(roomRef.current?.players.find(p=>p.id===sessionRef.current?.playerId)?.ready){await roomAction('ready',{ready:false});return;}
-      if(!runner.current||runner.current.closed||activeCode!==code||activeLanguage!==language){if(!await deploy())return;}
-      await roomAction('ready',{ready:true});
-    }finally{setBusy(false);}
+    if(busy)return;const seat=sessionRef.current,view=roomRef.current;if(!seat||!view)return;
+    if(view.players.find(p=>p.id===seat.playerId)?.ready){await roomAction('ready',{ready:false});return;}
+    setBusy(true);setError('');setStatus('正在验证本次提交…');const r=new Runner(language);validation.current=r;
+    try{await r.request('load',{},45000);await r.request('compile',{code});validateDecision(await r.request('decide',{observation:observe(createWorld(view.players.map(p=>p.name),180,view.round-1),seat.playerId),memory:{}}));if(sessionRef.current===seat&&await roomAction('ready',{ready:true,program:{language,code}}))setStatus('已提交并锁定这份代码；取消准备后可以重新提交。');}catch(e){setError(String(e));}finally{r.close();validation.current=null;setBusy(false);}
   }
-  function invalidateReady(){
-    const view=roomRef.current;if(unreadyPending.current||!view?.players.find(p=>p.id===sessionRef.current?.playerId)?.ready||!['waiting','intermission','countdown'].includes(view.status))return;
-    unreadyPending.current=true;roomAction('ready',{ready:false}).finally(()=>{unreadyPending.current=false;});
-  }
-  function editCode(value:string){invalidateReady();setCode(value);}
-  function switchLanguage(value:string){invalidateReady();drafts.current[language]=code;setLanguage(value);setCode(drafts.current[value]);}
-  async function copyRoom(){try{await navigator.clipboard.writeText(session!.code);setCopied(true);setTimeout(()=>setCopied(false),2000);}catch{setNetError('复制失败，请手动复制房间码');}}
-  function download(){const blob=new Blob([code],{type:'text/plain;charset=utf-8'});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=language==='python'?'strategy.py':'strategy.js';a.click();URL.revokeObjectURL(url);}
-  const changed=activeCode!==code||activeLanguage!==language;
-  return <div className="app-shell">
-    <header className="topbar"><a className="brand" href="/" aria-label="Codefront 首页"><span className="brand-mark"><Braces size={25}/></span><span>CODEFRONT<small>代码战场</small></span></a><nav aria-label="主导航"><button className={!session?'nav-active':''} onClick={()=>{if(session)training();}}>训练场</button><button className={session?'nav-active':''} onClick={()=>setRoomModal(true)}>多人房间 <span className="tiny-tag">2–4</span></button></nav><div className="top-actions"><span className="edition">PLAYGROUND / 01</span><button className="plain-button" onClick={()=>setManual(true)}><BookOpen size={17}/>手册</button><a href="https://github.com/hjkc111/codinggame" target="_blank" rel="noreferrer" className="github-link" aria-label="查看 GitHub 源代码"><Code2 size={19}/></a></div></header>
-    <main className="workspace">
-      <div className="workspace-heading"><div><div className="eyebrow">{session?'MULTIPLAYER ARENA':'YOUR CODE. YOUR SQUAD.'}</div><h1>{session?'小队已集结':'让代码，进入战场。'}</h1></div><div className="heading-note"><span className="label-dot"/>{session?'云端结算 · 自由混战':'采集 · 运回基地 · 争夺核心'}<span className="muted">三台机器人，一个策略。</span></div></div>
-      {session&&<section className="room-strip" aria-label="当前房间"><span>房间 <strong>{session.code}</strong></span><button className="icon-button" onClick={copyRoom} aria-label="复制房间码">{copied?<Check size={16}/>:<Copy size={16}/>}</button><span className="room-members">{room?.players.map(p=>p.name).join(' / ')}</span><span>{room?.players.length||1}/4 人</span><span className="muted" title="一次请求的网络往返时间，不是画面帧率">{latency===null?'连接中':`${latency} ms`}</span><button className="plain-button" onClick={training}>返回训练</button></section>}
-      {session&&room&&<SeriesPanel room={room} playerId={session.playerId} busy={busy||loading} onReady={prepare} onAction={roomAction}/>}
-      {netError&&<div className="notice error" role="alert">{netError}</div>}
-      <div className="battle-layout">
-        <section className="editor-panel panel">
-          <div className="panel-bar"><span className="file-tab"><Code2 size={16}/>{language==='python'?'strategy.py':'strategy.js'}<span className={changed?'unsaved':''}/></span><select disabled={loading} aria-label="编程语言" value={language} onChange={e=>switchLanguage(e.target.value)}><option value="python">Python</option><option value="javascript">JavaScript</option></select></div>
-          <div className="editor-tools"><span><span className="mint">ƒ</span> decide(observation, memory)</span><button className="icon-button" onClick={download} aria-label="下载代码"><Download size={15}/></button></div>
-          <div className="code-editor"><div ref={gutter} className="line-numbers" aria-hidden="true">{code.split('\n').map((_,i)=><div key={i}>{i+1}</div>)}</div><div className="code-content"><pre ref={editorPre} aria-hidden="true">{highlight(code)}{'\n'}</pre><textarea disabled={loading} aria-label="策略代码编辑器" value={code} spellCheck={false} onChange={e=>editCode(e.target.value)} onScroll={e=>{if(editorPre.current){editorPre.current.scrollTop=e.currentTarget.scrollTop;editorPre.current.scrollLeft=e.currentTarget.scrollLeft;}if(gutter.current)gutter.current.scrollTop=e.currentTarget.scrollTop;}} onKeyDown={e=>{if(e.key==='Tab'){e.preventDefault();const el=e.currentTarget,start=el.selectionStart,end=el.selectionEnd;editCode(code.slice(0,start)+'    '+code.slice(end));requestAnimationFrame(()=>{el.selectionStart=el.selectionEnd=start+4;});}if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();deploy();}}}/></div></div>
-          <div className="editor-meta"><span>UTF-8 · {language==='python'?'4 spaces':'2 spaces'}</span><span>{version?`运行 v${version}${changed?' · 草稿已修改':''}`:'本机自动保存'}</span></div>
-          <div className="run-area"><button className="primary run-button" disabled={loading} onClick={deploy}>{loading?<span className="spinner"/>:version?<Upload size={17}/>:<Play size={17} fill="currentColor"/>}{loading?'解释器加载中…':version?'部署修改':'运行策略'}<kbd>Ctrl ↵</kbd></button><div className="runtime-status"><span className={loading?'amber':'mint'}>●</span>{runtime}</div></div>
-        </section>
-        <div className="arena-column"><section className="arena-panel panel"><div className="panel-bar arena-bar"><div className="arena-title"><span className="live-indicator"/><strong>交汇之地</strong><span className="map-tag">SECTOR 01</span></div><span className="match-time"><Flag size={14}/>{clock(world.duration-world.time)}</span></div>
-          <div className="scoreboard">{world.players.map((p,i)=><div className="score-item" key={p.id}><span className="team-index" style={{color:p.color}}>0{i+1}</span><span>{p.name}</span><strong style={{color:p.color}}>{p.score}<small> EP</small></strong></div>)}</div>
-          <div className="arena-wrap"><Arena online={!!session} world={world} selected={selected} onSelect={setSelected} guides={guides} running={running}/><span className="arena-mode">{session?'ONLINE / 云端房间':demo?'DEMO / 示例脚本':'TRAINING / 你的策略'}</span>{session&&room?.status==='waiting'&&<div className="arena-overlay"><Users size={32}/><h2>等待队友加入</h2><p>分享房间码 {session.code}，至少两人即可开始。</p><p className="muted">编辑策略后点击「验证并准备」，全员准备才开战。</p></div>}{!session&&world.status==='finished'&&<div className="arena-overlay result"><Flag size={32}/><h2>{world.players.filter(p=>p.score===Math.max(...world.players.map(p=>p.score))).map(p=>p.name).join(' & ')} 获胜</h2><p>本局已结束 · 能源已完成结算</p>{!session&&<button className="primary" onClick={reset}>再次挑战</button>}</div>}</div>
-          <div className="arena-controls"><div>{!session&&<><button className="icon-button" aria-label={running?'暂停训练':'继续训练'} onClick={()=>{setRunning(!running);runningRef.current=!running;}}>{running?<Pause size={17}/>:<Play size={17}/>}</button><button className="icon-button" aria-label="重置训练" onClick={reset}><RotateCcw size={16}/></button><button className="speed-button" onClick={()=>setSpeed(speed===1?2:1)}>{speed}×</button></>}<span className="timeline-label">{clock(world.time)}</span><div className="timeline"><span style={{width:`${world.time/world.duration*100}%`}}/></div></div><button className={'guide-toggle '+(guides?'on':'')} onClick={()=>setGuides(!guides)}><ScanLine size={16}/>战术辅助</button></div>
-        </section>
-        <section className="squad-panel"><div className="section-label"><span>你的小队</span><span>{own.filter(r=>r.alive).length} / 3 ACTIVE</span></div><div className="squad-cards">{own.map((r,i)=><button className={'robot-card '+(selected===r.id?'selected':'')} key={r.id} onClick={()=>setSelected(r.id)}><div className="robot-card-heading"><span className="robot-symbol">{i===0?<Radio size={21}/>:i===1?<Target size={21}/>:<Zap size={21}/>}</span><span>{r.role}<small>{i===0?'侦察机':i===1?'守卫机':'运输机'}</small></span><span className="robot-number">0{i+1}</span></div><div className="hp-track"><span style={{width:`${r.hp/r.maxHp*100}%`}}/></div><div className="robot-stats"><span>{r.alive?`${Math.round(r.hp)} HP`:'重生中'}</span><span>{r.cargo} EP · {r.cargoSlots}/{r.capacity} 格</span></div></button>)}</div></section>
-        </div>
-      </div>
-      <section className="bottom-panel panel"><div className="console-column"><div className="section-label"><span><Terminal size={15}/>运行终端</span><span>{error?'ERROR':`TICK ${world.tick}`}</span></div>{error?<pre className="error console-error" role="alert">{error}</pre>:<div className="console-lines">{logs.length?logs.slice(-3).map((l,i)=><div key={i}><span className="mint">›</span> {l}</div>):<><div><span className="mint">›</span> {demo?'正在展示内置脚本。点击「运行策略」接管你的小队。':'解释器输出和部署记录将显示在这里。'}</div><div className="muted">{session?'每位玩家独立运行代码，云端统一计算战斗。':'修改返航条件，观察一次策略改变带来的不同。'}</div></>}</div>}</div><div className="inspection-column"><div className="section-label"><span>决策观察</span><span>{focused?.id}</span></div><div className="inspector"><span className="mint">{focused?.role}</span><ChevronRight size={15}/><span>{focused?.action.type==='gather'?'采集能源':focused?.action.type==='move'?'移动中':focused?.action.type==='attack'?'锁定敌人':'等待指令'}</span><span className="muted">{focused?.action.target_id||`${Math.round(focused?.x||0)}, ${Math.round(focused?.y||0)}`}</span></div><div className="last-event">{[...world.events].reverse().find(e=>['score','death','core'].includes(e.kind))?.text||'点击战场上的机器人，跟踪它的实时决策。'}</div></div></section>
-      <footer className="workspace-footer"><span>CODEFRONT <span className="muted">/ EARLY ACCESS 0.3</span></span><button onClick={()=>setManual(true)}>不确定怎么写？随时翻开手册 <ArrowUpRight size={14}/></button></footer>
+  async function enter(op:string){setBusy(true);setError('');try{const data=await api({op,name,code:joinCode});cancel();const seat={code:data.code,token:data.token,playerId:data.playerId};sessionRef.current=seat;roomRef.current=null;computing.current='';loadedReplay.current='';setSession(seat);sessionStorage.setItem('codefront-seat',JSON.stringify(seat));applyRoom(data);setRoomModal(false);setStatus('所有成员提交后统一计算。');}catch(e){setError(String(e));}finally{setBusy(false);}}
+  function leave(){cancel();sessionRef.current=null;roomRef.current=null;setSession(null);setRoom(null);sessionStorage.removeItem('codefront-seat');setError('');}
+  const locked=busy||!!room?.players.find(p=>p.id===session?.playerId)?.ready&&room.status!=='computing';
+  function switchLanguage(value:Program['language']){drafts.current[language]=code;setLanguage(value);setCode(drafts.current[value]);}
+  useEffect(()=>{const el=editor.current;if(el){const parts=code.slice(0,el.selectionStart).split('\n');setCaret(`${parts.length}:${parts.at(-1)!.length+1}`);}},[code]);
+  function locate(role:string){const el=editor.current;if(!el)return;const i=code.indexOf(language==='python'?`def ${role}(`:`function ${role}(`);if(i<0){setStatus('当前草稿使用旧版入口。载入分机器人示例可使用此导航。');return;}el.focus();el.setSelectionRange(i,i);el.scrollTop=Math.max(0,(code.slice(0,i).split('\n').length-3)*font*1.65);setCaret(`${code.slice(0,i).split('\n').length}:1`);}
+  function download(){const url=URL.createObjectURL(new Blob([code],{type:'text/plain;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download=language==='python'?'strategy.py':'strategy.js';a.click();URL.revokeObjectURL(url);}
+  return <div className="app-shell"><header className="topbar"><a className="brand" href="/"><span className="brand-mark"><Braces/></span><span>CODEFRONT<small>代码战场</small></span></a><nav><button className={!session?'nav-active':''} onClick={leave}>训练场</button><button className={session?'nav-active':''} onClick={()=>setRoomModal(true)}>多人房间 · 2–4</button></nav><div className="top-actions"><button className="plain-button" onClick={()=>setManual(true)}><BookOpen size={17}/>自选手册</button><a className="github-link" href="https://github.com/hjkc111/codinggame" target="_blank" rel="noreferrer">GitHub</a></div></header>
+    <main className="workspace code-workspace"><div className="workspace-heading"><div><div className="eyebrow">WRITE. SIMULATE. REPLAY.</div><h1>三台机器人，三份独立策略。</h1></div><button className="secondary" onClick={()=>setBattle(true)}>打开战场</button></div>
+      {session&&<><div className="room-strip"><span>房间 <strong>{session.code}</strong></span><span className="room-members">{room?.players.map(p=>p.name).join(' / ')}</span><button className="plain-button" onClick={async()=>{try{await navigator.clipboard.writeText(`${location.origin} 房间码 ${session.code}`);setStatus('网址和房间码已复制。');}catch{setStatus(`请手动复制房间码 ${session.code}`);}}}>复制邀请</button><button className="plain-button" onClick={leave}>返回训练</button></div>{room&&<SeriesPanel room={room} playerId={session.playerId} busy={busy} onReady={prepare} onAction={roomAction}/>}<p className="submission-note">提交后本轮源码对房间成员可见，房主浏览器负责执行，请勿包含密钥。全员提交才开始计算；房主计算期间保持页面开启。已生成战报可各自播放。</p><div className="toolbar">{room?.history.map(h=><button className="secondary" key={h.round} onClick={()=>openReplay(h.round)}>查看第 {h.round} 轮战报</button>)}</div></>}
+      <section className="api-reference" aria-label="系统只读接口"><div className="reference-heading"><strong>系统接口 · 只读，无需修改</strong><span>坐标 960 × 640 · 每 0.2 秒决策 · 教程随时自选</span></div><div className="api-grid"><div><b>robot / 当前机器人</b><p><code>id, role, x, y</code> 编号、角色、坐标<br/><code>hp / maxHp</code> 当前 / 最大血量<br/><code>cargo / cargoSlots / capacity</code> 能量 / 已占格 / 容量<br/><code>alive</code> 是否存活</p></div><div><b>world / 当前战况</b><p><code>base</code> 自己的基地<br/><code>resources / enemies / robots</code> 资源 / 活敌 / 己方<br/><code>time / tick / scores</code> 模拟秒 / 步数 / 交付分<br/><code>memory</code> 各机器人独立、跨决策保留的记忆</p></div><div><b>直接调用，返回动作</b><p><code>robot.move_to(x, y)</code> 前往坐标<br/><code>robot.gather(target) / attack(enemy)</code> 采集 / 攻击<br/><code>robot.follow(points, memory)</code> 沿路线循环<br/><code>world.nearest_resource(robot)</code> 最近资源，可能为空</p></div></div><details><summary>展开带中文注释的完整接口源码（系统提供，不要复制到下方修改）</summary><pre className="reference-code">{sdk}</pre></details></section>
+      <section className="panel strategy-panel" aria-label="策略编辑工作台"><div className="workspace-toolbar"><label>语言 <select aria-label="编程语言" value={language} disabled={locked} onChange={e=>switchLanguage(e.target.value as Program['language'])}><option value="python">Python</option><option value="javascript">JavaScript</option></select></label><div className="role-navigation">{['scout','guard','hauler'].map(role=><button key={role} className="plain-button" onClick={()=>locate(role)}>{role.toUpperCase()} ↗</button>)}</div><label>字号 <select aria-label="编辑器字号" value={font} onChange={e=>setFont(Number(e.target.value))}>{[14,16,18,20].map(v=><option key={v}>{v}</option>)}</select></label><button className="plain-button" onClick={download}><Download size={15}/>下载</button><label className="plain-button import-label"><Upload size={15}/>导入<input aria-label="导入策略" disabled={locked} type="file" accept=".py,.js,.txt" onChange={async e=>{const f=e.target.files?.[0];if(f){if(f.size>80000)setError('文件过大，代码最多 20,000 字符');else{const text=await f.text();if(text.length>20000)setError('代码最多 20,000 字符');else setCode(text);}}e.target.value='';}}/></label></div>
+        <div className="workspace-toolbar run-toolbar"><button className="primary" disabled={busy||!!work.current||room?.status==='computing'} onClick={train}><Play size={17}/>运行训练</button>{session&&<button className="secondary" disabled={busy||!room||!['waiting','intermission'].includes(room.status)} onClick={prepare}>{room?.players.find(p=>p.id===session.playerId)?.ready?'取消准备':'验证并提交'}</button>}<button className="plain-button" disabled={locked} onClick={()=>{download();setCode(language==='python'?PYTHON:JAVASCRIPT);setStatus('旧草稿已下载备份，已载入分机器人示例。');}}>载入分机器人示例</button>{busy&&!session&&<button className="plain-button" onClick={cancel}>取消计算</button>}<span className="muted">{status}{progress!==null?` ${progress}%`:''}</span></div>
+        {error&&<pre className="notice" role="alert">{error}<button className="plain-button" onClick={()=>setError('')}>收起</button></pre>}
+        <textarea ref={editor} className="strategy-input" aria-label="策略代码" value={code} readOnly={locked} spellCheck={false} autoCapitalize="off" autoCorrect="off" wrap="soft" style={{fontSize:font}} onChange={e=>setCode(e.target.value)} onSelect={e=>{const text=e.currentTarget.value.slice(0,e.currentTarget.selectionStart),parts=text.split('\n');setCaret(`${parts.length}:${parts.at(-1)!.length+1}`);}} onKeyDown={e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();void train();}if(e.key==='Tab'&&!locked){e.preventDefault();const el=e.currentTarget,start=el.selectionStart,end=el.selectionEnd;setCode(code.slice(0,start)+'    '+code.slice(end));requestAnimationFrame(()=>el.setSelectionRange(start+4,start+4));}}}/>
+        <div className="editor-meta"><span>逻辑行:列 {caret} · {code.split('\n').length} 行 · {code.length}/20,000 字符</span><span>{locked?'已提交或验证中 · 取消准备后编辑':'草稿自动保存 · 自动折行 · Tab 缩进 · Ctrl+Enter 训练'}</span></div>
+      </section><footer className="workspace-footer"><span>CODEFRONT v0.4 · 固定结果，独立播放</span><button onClick={()=>setManual(true)}>查看操作与策略手册 →</button></footer>
     </main>
-    {manual&&<div className="modal-backdrop" onClick={()=>setManual(false)}><section className="manual-modal" role="dialog" aria-modal="true" aria-label="编程手册" onClick={e=>e.stopPropagation()}><header><div><div className="eyebrow">FIELD MANUAL</div><h2>编程手册</h2><p>按需查阅，没有必修关卡。</p></div><button autoFocus className="icon-button" aria-label="关闭手册" onClick={()=>setManual(false)}><X/></button></header><div className="manual-layout"><nav>{chapters.map((c,i)=><button className={chapter===i?'active':''} key={c.title} onClick={()=>setChapter(i)}><span>0{i+1}</span>{c.title}</button>)}</nav><article><h3>{chapters[chapter].title}</h3><p>{chapters[chapter].text}</p><ol>{chapters[chapter].steps.map(s=><li key={s}>{s}</li>)}</ol><pre>{chapters[chapter].code}</pre><button className="plain-button" onClick={()=>setManual(false)}>回到战场 <ArrowUpRight size={16}/></button></article></div></section></div>}
-    {roomModal&&<div className="modal-backdrop" onClick={()=>setRoomModal(false)}><section className="room-modal" role="dialog" aria-modal="true" aria-label="多人房间" onClick={e=>e.stopPropagation()}><header><div><div className="eyebrow">BRING YOUR SQUAD</div><h2>和朋友，写一场对决。</h2></div><button className="icon-button" aria-label="关闭房间面板" onClick={()=>setRoomModal(false)}><X/></button></header><p>2–4 人自由混战。真实代码，同一片战场。</p><label>你的昵称<input autoFocus maxLength={20} value={name} onChange={e=>setName(e.target.value)}/></label><button className="primary" disabled={busy||!name.trim()} onClick={()=>enterRoom('create')}><Users size={17}/>创建新房间</button><div className="or-divider">或加入朋友的房间</div><label>六位房间码<input maxLength={6} placeholder="例如 A1B2C3" value={joinCode} onChange={e=>setJoinCode(e.target.value.toUpperCase())}/></label><button className="secondary" disabled={busy||joinCode.length!==6||!name.trim()} onClick={()=>enterRoom('join')}>加入房间 <ChevronRight size={17}/></button>{netError&&<p role="alert" className="error">{netError}</p>}<p className="small-note">休闲对战 · Python 在各自浏览器运行。私有站点需先为朋友开放访问权限。</p></section></div>}
+    <ReplayViewer replay={replay} open={battle} onClose={()=>setBattle(false)} title={replayTitle}/>
+    <dialog ref={manualDialog} className="manual-modal native-dialog" onCancel={()=>setManual(false)} onClose={()=>setManual(false)} aria-label="操作手册"><header><div><div className="eyebrow">FIELD MANUAL / 自选阅读</div><h2>边写边查，随时返回。</h2></div><button className="secondary" onClick={()=>setManual(false)}>关闭手册</button></header><div className="manual-layout"><nav>{chapters.map(([title],i)=><button key={title} className={chapter===i?'active':''} onClick={()=>setChapter(i)}>{i+1}. {title}</button>)}</nav><article><h3>{chapters[chapter][0]}</h3><p>{chapters[chapter][1]}</p><p className="muted">完整字段和工具函数也放在编程页上方的只读接口框，无需退出编辑器翻找。</p></article></div></dialog>
+    <dialog ref={roomDialog} className="room-modal native-dialog" onCancel={()=>setRoomModal(false)} onClose={()=>setRoomModal(false)} aria-label="多人房间"><header><div><Users/><h2>召集你的对手</h2></div><button className="plain-button" onClick={()=>setRoomModal(false)}>关闭</button></header><p>公开网址 + 房间码，2–4 人自由对战。</p><label>昵称<input value={name} maxLength={20} onChange={e=>setName(e.target.value)}/></label><button className="primary" disabled={busy||room?.status==='computing'} onClick={()=>enter('create')}>创建房间</button><label>六位房间码<input value={joinCode} maxLength={6} onChange={e=>setJoinCode(e.target.value.toUpperCase())}/></label><button className="secondary" disabled={busy||room?.status==='computing'} onClick={()=>enter('join')}>加入房间</button>{error&&<p className="error">{error}</p>}</dialog>
   </div>;
 }
-

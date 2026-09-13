@@ -1,19 +1,22 @@
 let py;
 let scope;
 let output = [];
+let sdk;
 self.onmessage = async ({data}) => {
   const {id, type} = data;
   try {
     if(type === 'load') {
       importScripts('/python/pyodide.js');
       py = await loadPyodide({indexURL:'/python/',stdout:s=>{if(output.length<8)output.push(s.slice(0,500));},stderr:s=>{if(output.length<8)output.push(s.slice(0,500));}});
+      sdk = await (await fetch('/sdk.py')).text();
       self.postMessage({id,ok:true}); return;
     }
     output=[];
     if(type === 'compile') {
       scope = py.runPython('dict()');
+      py.runPython(sdk,{globals:scope,filename:'sdk.py'});
       py.runPython(data.code,{globals:scope,filename:'strategy.py'});
-      if(!scope.get('decide'))throw new Error('请定义 decide(observation, memory)');
+      py.runPython("if 'decide' not in globals():\n    assert all(callable(globals().get(n)) for n in ('scout', 'guard', 'hauler')), '请定义 scout、guard、hauler 三个函数，或旧版 decide'\n    decide = _dispatch",{globals:scope});
       self.postMessage({id,ok:true});return;
     }
     scope.set('_obs_json',JSON.stringify(data.observation));

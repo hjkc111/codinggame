@@ -1,51 +1,55 @@
-export const PYTHON = `# 目标：收集能源，满载后运回基地
-# 每次调用控制三台机器人。点击右上角「手册」查看 API。
-def decide(observation, memory):
-    actions = {}
-    base = observation["base"]
-    resources = observation["resources"]
+export const PYTHON = `# 每 0.2 秒模拟时间调用一次。无需自己写循环！
+# 三个函数各控制一台机器人；memory 是该机器人的独立记忆。
+# 修改路线/目标/判断后，运行训练；已提交的联机轮次不会被修改。
 
-    for robot in observation["robots"]:
-        if not robot["alive"]:
-            continue
+def collect(robot, world):
+    # cargoSlots 是已占格数，cargo 是能量值（核心一格值 20）。
+    if robot.cargoSlots >= robot.capacity or robot.hp < robot.maxHp * 0.3:
+        return robot.move_to(world.base)  # 自动卸货、回血
+    return robot.gather(world.nearest_resource(robot))
 
-        # 满载或受伤时返回基地
-        if (robot["cargo"] >= robot["capacity"]
-                or robot["hp"] < robot["maxHp"] * 0.3):
-            actions[robot["id"]] = {
-                "type": "move", "x": base["x"], "y": base["y"]
-            }
-        elif resources:
-            target = min(resources, key=lambda r:
-                (r["x"] - robot["x"]) ** 2
-                + (r["y"] - robot["y"]) ** 2)
-            actions[robot["id"]] = {
-                "type": "gather", "target_id": target["id"]
-            }
-        else:
-            actions[robot["id"]] = {
-                "type": "move", "x": base["x"], "y": base["y"]
-            }
 
-    return actions, memory
+def scout(robot, world, memory):
+    # Scout：快速采集。也可以指定 world.resources 中某个 id 的资源。
+    return collect(robot, world)
+
+
+def guard(robot, world, memory):
+    # Guard：敌人靠近时追击，否则沿自己的路线巡逻。
+    if robot.hp < 50:
+        return robot.move_to(world.base)
+    enemy = world.nearest_enemy(robot)
+    if enemy and robot.distance_to(enemy) < 160:
+        return robot.attack(enemy)
+    # 修改这些坐标，就能改变这台机器人的轨迹。
+    route = [(360, 240), (540, 240), (540, 400), (360, 400)]
+    return robot.follow(route, memory)
+
+
+def hauler(robot, world, memory):
+    # Hauler：大容量运输。可以换成自己的选矿与返航条件。
+    return collect(robot, world)
 `;
-export const JAVASCRIPT = `// 每次返回 [actions, memory]，字段与 Python 相同。
-function decide(observation, memory) {
-  const actions = {};
-  const { base, resources, robots } = observation;
-  for (const robot of robots) {
-    if (!robot.alive) continue;
-    if (robot.cargo >= robot.capacity || robot.hp < robot.maxHp * 0.3) {
-      actions[robot.id] = { type: "move", ...base };
-    } else if (resources.length) {
-      const target = [...resources].sort((a, b) =>
-        Math.hypot(a.x - robot.x, a.y - robot.y) -
-        Math.hypot(b.x - robot.x, b.y - robot.y))[0];
-      actions[robot.id] = { type: "gather", target_id: target.id };
-    } else {
-      actions[robot.id] = { type: "move", ...base };
-    }
-  }
-  return [actions, memory];
+export const JAVASCRIPT = `// 每 0.2 秒模拟时间决策；三台机器人拥有独立 memory。
+function collect(robot, world) {
+    if (robot.cargoSlots >= robot.capacity || robot.hp < robot.maxHp * 0.3)
+        return robot.move_to(world.base);
+    return robot.gather(world.nearest_resource(robot));
+}
+
+function scout(robot, world, memory) {
+    return collect(robot, world);
+}
+
+function guard(robot, world, memory) {
+    if (robot.hp < 50) return robot.move_to(world.base);
+    const enemy = world.nearest_enemy(robot);
+    if (enemy && robot.distance_to(enemy) < 160) return robot.attack(enemy);
+    const route = [[360, 240], [540, 240], [540, 400], [360, 400]];
+    return robot.follow(route, memory);
+}
+
+function hauler(robot, world, memory) {
+    return collect(robot, world);
 }
 `;

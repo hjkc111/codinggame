@@ -8,6 +8,13 @@
       "when": 1789276566270,
       "tag": "0000_stormy_kinsey_walden",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1789288363472,
+      "tag": "0001_replay_chunks",
+      "breakpoints": true
     }
   ]
 }

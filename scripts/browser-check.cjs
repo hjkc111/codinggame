@@ -1,38 +1,34 @@
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE || 'playwright');
-const fs=require('fs');fs.mkdirSync('.qa',{recursive:true});
+const fs=require('fs'),assert=require('assert/strict');fs.mkdirSync('.qa',{recursive:true});
+const url=process.env.TEST_URL||'http://127.0.0.1:8787';
 (async()=>{
  const browser=await chromium.launch({channel:'chrome',headless:true});
- const context=await browser.newContext({viewport:{width:1440,height:1100}});const page=await context.newPage();
- const errors=[];page.on('pageerror',e=>errors.push(e.message));
- await page.goto((process.env.TEST_URL || 'http://localhost:5173/'));await page.waitForTimeout(1500);
- await page.getByRole('button',{name:'运行策略',exact:false}).click();
- await page.locator('.runtime-status').filter({hasText:'Python 正在执行'}).waitFor({timeout:60000});
- await page.waitForTimeout(4500);
- await page.screenshot({path:'.qa/desktop.png',fullPage:true});
- await page.getByRole('button',{name:'暂停训练',exact:true}).click();
- const before=await page.locator('.match-time').textContent();await page.waitForTimeout(900);const after=await page.locator('.match-time').textContent();if(before!==after)throw Error('Pause failed');
- await page.getByLabel('策略代码编辑器').fill('def decide(observation, memory):\n    return {r["id"]: {"type":"move", "x":480, "y":320} for r in observation["robots"]}, memory');
- await page.getByRole('button',{name:'部署修改',exact:false}).click();await page.getByText('运行 v2',{exact:true}).waitFor({timeout:45000});
- await page.waitForTimeout(1000);if(!(await page.locator('.inspector').textContent()).includes('移动中'))throw Error('Python change had no effect');
- await page.getByLabel('策略代码编辑器').fill('def decide(observation, memory):\n    while True:\n        pass');
- await page.getByRole('button',{name:'部署修改',exact:false}).click();await page.getByRole('alert').filter({hasText:'运行超时'}).waitFor({timeout:45000});
- await page.getByRole('button',{name:'手册',exact:true}).click();await page.getByRole('dialog',{name:'编程手册'}).waitFor();await page.screenshot({path:'.qa/manual-ui.png'});await page.getByRole('button',{name:'关闭手册'}).click();
- await page.setViewportSize({width:390,height:844});await page.screenshot({path:'.qa/mobile.png',fullPage:true});const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth);if(overflow)throw Error('Mobile overflow');
- await page.setViewportSize({width:1440,height:1000});
- const clients=[];for(let i=0;i<3;i++){const c=await browser.newContext();const p=await c.newPage();await p.goto((process.env.TEST_URL || 'http://localhost:5173/'));clients.push(p);}
- const call=(p,body)=>p.evaluate(async b=>{const r=await fetch('/api/rooms',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});return {status:r.status,data:await r.json()};},body);
- const created=await call(clients[0],{op:'create',name:'Alpha'});if(created.status!==200)throw Error(JSON.stringify(created));
- const seats=[created.data];for(let i=1;i<3;i++){const joined=await call(clients[i],{op:'join',name:['','Bravo','Charlie'][i],code:created.data.code});if(joined.status!==200)throw Error(JSON.stringify(joined));seats.push(joined.data);}
- const forbidden=await call(clients[1],{op:'timer',code:seats[0].code,token:seats[1].token,match:1,round:1,seconds:600});if(forbidden.status!==409)throw Error('Host auth failed');
- for(let i=0;i<3;i++){const ready=await call(clients[i],{op:'ready',code:seats[i].code,token:seats[i].token,match:1,round:1,ready:true});if(ready.status!==200)throw Error(JSON.stringify(ready));}
- await page.waitForTimeout(3200);
- for(let n=0;n<5;n++){await Promise.all(clients.map((p,i)=>call(p,{op:'sync',match:1,round:1,code:seats[i].code,token:seats[i].token,seq:n,actions:{[`${seats[i].playerId}-0`]:{type:'move',x:480,y:320}}})));await page.waitForTimeout(420);}
- const snapshots=await Promise.all(clients.map((p,i)=>call(p,{op:'sync',match:1,round:1,code:seats[i].code,token:seats[i].token,seq:10,actions:{}})));
- if(snapshots.some(s=>s.status!==200||s.data.world.players.length!==3))throw Error('Room sync failed');
- const late=await call(page,{op:'join',code:seats[0].code,name:'Late'});if(late.status!==409)throw Error('Late join allowed');
- fs.writeFileSync('.qa/browser-results.json',JSON.stringify({python:true,modify:true,pause:true,timeout:true,mobileOverflow:overflow,threePlayers:true,hostAuthorization:true,lateJoinRejected:true,errors,snapshotTimes:snapshots.map(s=>s.data.world.time)},null,2));
- console.log(fs.readFileSync('.qa/browser-results.json','utf8'));await browser.close();
+ try{
+ const context=await browser.newContext({viewport:{width:1440,height:1100}}),page=await context.newPage(),errors=[];
+ page.on('pageerror',e=>errors.push(e.message));await page.goto(url);
+ const editor=page.getByLabel('策略代码',{exact:true});await editor.waitFor();
+ const python=await editor.inputValue();assert(python.includes('def scout('));
+ const dimensions=await editor.evaluate(e=>({width:e.clientWidth,scroll:e.scrollWidth,color:getComputedStyle(e).color,wrap:e.wrap}));assert(dimensions.width>1200);assert.equal(dimensions.wrap,'soft');assert.notEqual(dimensions.color,'rgba(0, 0, 0, 0)');
+ await editor.fill('# '+ '中文abc'.repeat(300));assert.equal(await editor.evaluate(e=>e.scrollWidth),await editor.evaluate(e=>e.clientWidth));
+ await editor.press('Control+End');await editor.press('Tab');assert((await editor.inputValue()).endsWith('    '));await editor.fill(python);
+ await page.getByLabel('编辑器字号').selectOption('20');assert.equal(await editor.evaluate(e=>getComputedStyle(e).fontSize),'20px');await page.getByLabel('编辑器字号').selectOption('16');
+ await page.screenshot({path:'.qa/workspace-v04.png',fullPage:true});
+ await page.getByRole('button',{name:'打开战场',exact:true}).click();await page.getByRole('button',{name:'关闭战场'}).click();
+ await page.getByRole('button',{name:'运行训练',exact:true}).click();
+ await page.getByRole('dialog',{name:'战场播放器'}).waitFor({timeout:90000});
+ assert(!(await page.locator('.player-inspector').innerText()).includes('Error'));
+ await page.getByRole('button',{name:'暂停',exact:true}).click();const before=await page.getByTestId('playback-time').innerText();await page.waitForTimeout(500);assert.equal(await page.getByTestId('playback-time').innerText(),before);
+ for(const v of ['0.25','0.5','1','2','4'])await page.getByLabel('播放速度').selectOption(v);
+ await page.getByLabel('播放进度').fill('170');await page.getByRole('button',{name:'播放',exact:true}).click();await page.waitForTimeout(1000);const fast=await page.getByTestId('playback-time').innerText();assert(parseFloat(fast)>172);await page.getByRole('button',{name:'暂停',exact:true}).click();
+ await page.getByLabel('播放进度').fill('180');await page.screenshot({path:'.qa/replay-v04.png',fullPage:true});
+ const score=await page.locator('.scoreboard').innerText();assert(/\d/.test(score));
+ await page.getByRole('button',{name:'关闭战场'}).click();await page.getByRole('button',{name:'打开战场',exact:true}).click();assert((await page.getByTestId('playback-time').innerText()).startsWith('180.0'));await page.getByRole('button',{name:'关闭战场'}).click();
+ await page.getByLabel('编程语言').selectOption('javascript');await page.getByRole('button',{name:'运行训练',exact:true}).click();await page.getByRole('dialog',{name:'战场播放器'}).waitFor({timeout:60000});await page.getByRole('button',{name:'关闭战场'}).click();
+ await page.getByLabel('编程语言').selectOption('python');
+ await editor.fill('def decide(o,m):\n    while True: pass');await page.getByRole('button',{name:'运行训练',exact:true}).click();await page.getByRole('dialog',{name:'战场播放器'}).waitFor({timeout:60000});assert((await page.locator('.player-inspector').innerText()).includes('运行超时'));await page.getByRole('button',{name:'关闭战场'}).click();await editor.fill(python);
+ await page.getByRole('button',{name:'自选手册',exact:true}).click();await page.getByRole('dialog',{name:'操作手册'}).waitFor();await page.getByRole('button',{name:'关闭手册'}).click();
+ await page.setViewportSize({width:390,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);await page.screenshot({path:'.qa/mobile-v04.png',fullPage:true});
+ assert.deepEqual(errors,[]);
+ fs.writeFileSync('.qa/browser-v04.json',JSON.stringify({editor:dimensions,python:true,javascript:true,pause:true,speeds:true,seek:true,timeout:true,mobile:true,errors},null,2));console.log(fs.readFileSync('.qa/browser-v04.json','utf8'));
+ }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exit(1)});
-
-
-
